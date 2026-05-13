@@ -65,7 +65,6 @@ def create_polarion_test_case(
     description: str,
     project_id: str = DEFAULT_PROJECT,
     test_steps: Optional[str] = None,
-    expected_results: Optional[str] = None,
     severity: str = "should_have",
     status: str = "draft"
 ) -> str:
@@ -77,7 +76,6 @@ def create_polarion_test_case(
         description: Detailed description of what the test validates
         project_id: Polarion project ID (default: from env)
         test_steps: Step-by-step test instructions (newline-separated)
-        expected_results: Expected outcomes (newline-separated)
         severity: Importance level (must_have, should_have, nice_to_have, will_not_have)
         status: Initial status (draft, approved, etc.)
 
@@ -90,7 +88,6 @@ def create_polarion_test_case(
             description=description,
             project_id=project_id,
             test_steps=test_steps,
-            expected_results=expected_results,
             severity=severity,
             status=status
         )
