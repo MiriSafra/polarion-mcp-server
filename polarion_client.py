@@ -349,14 +349,9 @@ class PolarionClient:
     ) -> Dict[str, Any]:
         """Get test case details"""
 
-        params = {}
-        if include_test_steps:
-            params["include"] = "testSteps"
-
         result = self._make_request(
             "GET",
             f"projects/{project_id}/workitems/{test_case_id}",
-            params=params
         )
 
         if "error" in result:
@@ -367,7 +362,7 @@ class PolarionClient:
 
         test_case = result.get("data", {}).get("attributes", {})
 
-        return {
+        response = {
             "status": "success",
             "test_case_id": test_case_id,
             "title": test_case.get("title"),
@@ -377,6 +372,25 @@ class PolarionClient:
             "description": test_case.get("description", {}).get("value", ""),
             "url": f"{self.url}/polarion/#/project/{project_id}/workitem?id={test_case_id}"
         }
+
+        if include_test_steps:
+            steps_result = self._make_request(
+                "GET",
+                f"projects/{project_id}/workitems/{test_case_id}/teststeps",
+                params={"fields[teststeps]": "values"}
+            )
+            test_steps = []
+            for item in steps_result.get("data", []):
+                values = item.get("attributes", {}).get("values", [])
+                step = {"id": item.get("id", "")}
+                if len(values) > 0:
+                    step["step"] = values[0].get("value", "")
+                if len(values) > 1:
+                    step["expectedResult"] = values[1].get("value", "")
+                test_steps.append(step)
+            response["test_steps"] = test_steps
+
+        return response
 
     def update_test_case(
         self,
