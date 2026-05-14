@@ -41,19 +41,23 @@ class PolarionClient:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
-            "Content-Type": "application/json"
         }
+        if data is not None:
+            headers["Content-Type"] = "application/json"
 
         try:
-            response = requests.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=data,
-                params=params,
-                timeout=30,
-                verify=self.verify_ssl
-            )
+            kwargs = {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "timeout": 60,
+                "verify": self.verify_ssl,
+            }
+            if data is not None:
+                kwargs["json"] = data
+
+            response = requests.request(**kwargs)
 
             if response.status_code == 401:
                 return {
@@ -266,6 +270,52 @@ class PolarionClient:
                 "error": f"SOAP API error: {str(e)}"
             }
 
+    def delete_test_steps(
+        self,
+        test_case_id: str,
+        project_id: str
+    ) -> Dict[str, Any]:
+        """Delete all test steps from a test case"""
+
+        existing = self._make_request(
+            "GET",
+            f"projects/{project_id}/workitems/{test_case_id}/teststeps"
+        )
+
+        if "error" in existing:
+            return {
+                "status": "failed",
+                "error": f"Failed to get existing test steps: {existing['error']}"
+            }
+
+        steps = existing.get("data", [])
+        if not steps:
+            return {
+                "status": "success",
+                "message": f"No test steps to delete on {test_case_id}"
+            }
+
+        delete_data = {
+            "data": [{"type": "teststeps", "id": s["id"]} for s in steps]
+        }
+
+        result = self._make_request(
+            "DELETE",
+            f"projects/{project_id}/workitems/{test_case_id}/teststeps",
+            data=delete_data
+        )
+
+        if "error" in result:
+            return {
+                "status": "failed",
+                "error": f"Failed to delete test steps: {result['error']}"
+            }
+
+        return {
+            "status": "success",
+            "message": f"Deleted {len(steps)} test steps from {test_case_id}"
+        }
+
     def add_test_steps(
         self,
         test_case_id: str,
@@ -274,11 +324,11 @@ class PolarionClient:
         force_soap: bool = False
     ) -> Dict[str, Any]:
         """
-        Add test steps to a test case
+        Add test steps to a test case, replacing any existing steps.
 
         Strategies:
-        1. REST API (default): POST to /teststeps if work item has no steps
-        2. SOAP API (fallback): Use when REST fails or force_soap=True
+        1. REST API (default): DELETE existing + POST new steps
+        2. SOAP API (fallback): Use when force_soap=True
 
         Args:
             test_case_id: Work item ID (e.g., 'OCP-88278')
@@ -293,7 +343,6 @@ class PolarionClient:
 
         try:
             # Build test steps payload for REST API
-            # POST to /teststeps works for both adding and updating test steps
             steps_data = []
             for step in test_steps:
                 step_obj = {
@@ -316,13 +365,46 @@ class PolarionClient:
             )
 
             if "error" in result:
-                # REST failed - return error without SOAP fallback
-                # (User should delete existing steps first - polarion-cli does this automatically)
-                return {
-                    "status": "failed",
-                    "error": f"REST API failed: {result['error']}",
-                    "hint": "Test steps already exist. Delete them first or use polarion-cli which auto-deletes."
-                }
+                http_status = result.get("status", 0)
+                if http_status not in (400, 409, 500):
+                    return {
+                        "status": "failed",
+                        "error": f"REST API failed (HTTP {http_status}): {result['error']}"
+                    }
+
+                # Steps likely already exist — back up, delete, and retry
+                backup = self._make_request(
+                    "GET",
+                    f"projects/{project_id}/workitems/{test_case_id}/teststeps"
+                )
+                backup_steps = backup.get("data", [])
+                if backup_steps:
+                    import logging
+                    logging.warning(
+                        "Backing up %d existing test steps for %s before delete: %s",
+                        len(backup_steps), test_case_id, backup_steps
+                    )
+
+                del_result = self.delete_test_steps(test_case_id, project_id)
+                if del_result["status"] != "success":
+                    return {
+                        "status": "failed",
+                        "error": f"Failed to replace steps: {del_result['error']}",
+                        "backup_steps": backup_steps
+                    }
+
+                result = self._make_request(
+                    "POST",
+                    f"projects/{project_id}/workitems/{test_case_id}/teststeps",
+                    data={"data": steps_data}
+                )
+
+                if "error" in result:
+                    return {
+                        "status": "failed",
+                        "error": f"REST API failed after delete+retry: {result['error']}",
+                        "backup_steps": backup_steps
+                    }
 
             created_steps = result.get("data", [])
 
