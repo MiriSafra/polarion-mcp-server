@@ -51,7 +51,7 @@ class PolarionClient:
                 "url": url,
                 "headers": headers,
                 "params": params,
-                "timeout": 30,
+                "timeout": 60,
                 "verify": self.verify_ssl,
             }
             if data is not None:
@@ -365,12 +365,32 @@ class PolarionClient:
             )
 
             if "error" in result:
-                # Steps likely already exist — delete and retry
+                http_status = result.get("status", 0)
+                if http_status not in (400, 409, 500):
+                    return {
+                        "status": "failed",
+                        "error": f"REST API failed (HTTP {http_status}): {result['error']}"
+                    }
+
+                # Steps likely already exist — back up, delete, and retry
+                backup = self._make_request(
+                    "GET",
+                    f"projects/{project_id}/workitems/{test_case_id}/teststeps"
+                )
+                backup_steps = backup.get("data", [])
+                if backup_steps:
+                    import logging
+                    logging.warning(
+                        "Backing up %d existing test steps for %s before delete: %s",
+                        len(backup_steps), test_case_id, backup_steps
+                    )
+
                 del_result = self.delete_test_steps(test_case_id, project_id)
                 if del_result["status"] != "success":
                     return {
                         "status": "failed",
-                        "error": f"Failed to replace steps: {del_result['error']}"
+                        "error": f"Failed to replace steps: {del_result['error']}",
+                        "backup_steps": backup_steps
                     }
 
                 result = self._make_request(
@@ -382,7 +402,8 @@ class PolarionClient:
                 if "error" in result:
                     return {
                         "status": "failed",
-                        "error": f"REST API failed after delete+retry: {result['error']}"
+                        "error": f"REST API failed after delete+retry: {result['error']}",
+                        "backup_steps": backup_steps
                     }
 
             created_steps = result.get("data", [])
